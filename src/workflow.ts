@@ -13,9 +13,7 @@ export async function prepareCommit(pi: ExtensionAPI, ctx: ExtensionContext, arg
   const state = await inspectRepository(git, args.all);
   if (args.all) await validateAutoStage(git);
   if (!state.hasSelectedChanges) {
-    throw new Error(args.all
-      ? "There are no changes to commit."
-      : "There are no staged changes. Stage changes or use /commit --all.");
+    throw new Error("There are no changes to commit.");
   }
   const generated = await generateCommitMessage(ctx, {
     diff: state.diff,

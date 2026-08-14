@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Safely stage `/commit --all` changes while blocking likely secret files before model generation.
+- Make `/commit` automatically include, safely stage, and commit all changes; `--all` remains a backwards-compatible alias.
 
 ## 0.1.0
 

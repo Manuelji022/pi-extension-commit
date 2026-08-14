@@ -127,7 +127,7 @@ export async function validateAutoStage(ctx: GitContext): Promise<void> {
   if (statusResult.code !== 0) fail(statusResult, "Unable to inspect Git status.");
   const blocked = protectedChanges(parseStatus(statusResult.stdout));
   if (blocked.length > 0) {
-    throw new Error(`Refusing to stage protected paths with --all: ${blocked.join(", ")}. No files were staged.`);
+    throw new Error(`Refusing to stage protected paths: ${blocked.join(", ")}. No files were staged.`);
   }
 }
 

@@ -22,9 +22,6 @@ export default function commitExtension(pi: ExtensionAPI) {
       ctx.ui.setStatus("pi-commit", "Preparing commit...");
       try {
         const prepared = await prepareCommit(pi, ctx, parsed);
-        if (!parsed.all && prepared.state.hasUnstagedChanges) {
-          ctx.ui.notify("Unstaged or untracked changes will be left untouched.", "info");
-        }
         ctx.ui.setStatus("pi-commit", "Generating commit message...");
         let message = prepared.message;
         while (true) {

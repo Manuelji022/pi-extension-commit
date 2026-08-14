@@ -46,7 +46,7 @@ test("inspects staged changes and commits a multiline message", async () => {
   }
 });
 
-test("default mode ignores unstaged changes", async () => {
+test("staged-only inspection ignores unstaged changes", async () => {
   const cwd = await repo();
   try {
     await writeFile(join(cwd, "README.md"), "unstaged\n");
