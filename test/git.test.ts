@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { commitMessage, inspectRepository, type ExecResult } from "../src/git.ts";
+import { commitMessage, inspectRepository, stageAllSafely, validateAutoStage, type ExecResult } from "../src/git.ts";
 
 const execFileAsync = promisify(execFile);
 async function git(cwd: string, args: string[]): Promise<ExecResult> {
@@ -69,6 +69,109 @@ test("all mode stages and commits untracked files", async () => {
     assert.match(hash, /^[0-9a-f]+$/);
     const tracked = await git(cwd, ["ls-files", "new.txt"]);
     assert.equal(tracked.stdout.trim(), "new.txt");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("all mode blocks an untracked environment file before staging", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".env"), "TOKEN=secret\n");
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await assert.rejects(() => validateAutoStage({ cwd, exec }), /\.env.*No files were staged/);
+    const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
+    assert.equal(staged.stdout, "");
+    const status = await git(cwd, ["status", "--short"]);
+    assert.match(status.stdout, /\?\? \.env/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("all mode blocks modified and pre-staged protected files", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".env"), "TOKEN=initial\n");
+    await git(cwd, ["add", ".env"]);
+    await git(cwd, ["commit", "-qm", "chore: add environment file"]);
+    await writeFile(join(cwd, ".env"), "TOKEN=changed\n");
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await assert.rejects(() => validateAutoStage({ cwd, exec }), /\.env/);
+    await git(cwd, ["reset", "--quiet"]);
+    await git(cwd, ["add", ".env"]);
+    await assert.rejects(() => validateAutoStage({ cwd, exec }), /\.env/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("nested protected files are detected and reported before staging", async () => {
+  const cwd = await repo();
+  try {
+    await mkdir(join(cwd, "config"), { recursive: true });
+    await writeFile(join(cwd, "config", ".env.local"), "TOKEN=secret\n");
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await assert.rejects(() => validateAutoStage({ cwd, exec }), /config\/\.env\.local/);
+    const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
+    assert.equal(staged.stdout, "");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("safe environment examples are allowed", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".env.example"), "TOKEN=replace-me\n");
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await stageAllSafely({ cwd, exec });
+    const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
+    assert.equal(staged.stdout.trim(), ".env.example");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("all mode allows deleting a tracked environment file", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".env"), "TOKEN=secret\n");
+    await git(cwd, ["add", ".env"]);
+    await git(cwd, ["commit", "-qm", "chore: add environment file"]);
+    await rm(join(cwd, ".env"));
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await stageAllSafely({ cwd, exec });
+    const status = await git(cwd, ["status", "--short"]);
+    assert.match(status.stdout, /D  \.env/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("all mode blocks a staged rename involving a protected path", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".env"), "TOKEN=secret\n");
+    await git(cwd, ["add", ".env"]);
+    await git(cwd, ["commit", "-qm", "chore: add environment file"]);
+    await git(cwd, ["mv", ".env", ".env.backup"]);
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await assert.rejects(() => validateAutoStage({ cwd, exec }), /\.env/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("ignored protected files are not candidates for all mode", async () => {
+  const cwd = await repo();
+  try {
+    await writeFile(join(cwd, ".gitignore"), ".env\n");
+    await writeFile(join(cwd, ".env"), "TOKEN=secret\n");
+    const exec = (args: string[], options?: { timeout?: number; signal?: AbortSignal }) => git(cwd, args);
+    await stageAllSafely({ cwd, exec });
+    const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
+    assert.equal(staged.stdout, ".gitignore\n");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

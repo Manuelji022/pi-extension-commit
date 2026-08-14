@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { commitMessage, currentFingerprint, inspectRepository, type GitContext } from "./git.ts";
+import { commitMessage, currentFingerprint, inspectRepository, validateAutoStage, type GitContext } from "./git.ts";
 import { generateCommitMessage } from "./model.ts";
 import { validateCommitMessage } from "./conventional.ts";
 import type { CommitArgs } from "./args.ts";
@@ -9,7 +9,9 @@ export async function prepareCommit(pi: ExtensionAPI, ctx: ExtensionContext, arg
     cwd: ctx.cwd,
     exec: (command, options) => pi.exec("git", command, options),
   };
+  if (args.all) await validateAutoStage(git);
   const state = await inspectRepository(git, args.all);
+  if (args.all) await validateAutoStage(git);
   if (!state.hasSelectedChanges) {
     throw new Error(args.all
       ? "There are no changes to commit."

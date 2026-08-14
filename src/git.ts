@@ -39,11 +39,53 @@ function fail(result: ExecResult, fallback: string): never {
   throw new Error((result.stderr || result.stdout || fallback).trim());
 }
 
-function parseStatus(status: string): Array<{ code: string; path: string }> {
-  return status
-    .split("\0")
-    .filter(Boolean)
-    .map((part) => ({ code: part.slice(0, 2), path: part.slice(3) }));
+interface StatusEntry {
+  code: string;
+  path: string;
+  oldPath?: string;
+}
+
+function parseStatus(status: string): StatusEntry[] {
+  const entries: StatusEntry[] = [];
+  const parts = status.split("\0");
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    if (!part) continue;
+    const code = part.slice(0, 2);
+    const entry: StatusEntry = { code, path: part.slice(3) };
+    if (code.includes("R") || code.includes("C")) {
+      entry.oldPath = parts[++index] || undefined;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function protectedBasename(path: string): boolean {
+  const basename = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  if (basename === ".env" || (basename.startsWith(".env.") && ![".env.example", ".env.template"].includes(basename))) {
+    return true;
+  }
+  if ([".pem", ".key", ".p12", ".pfx"].some((extension) => basename.endsWith(extension))) return true;
+  if (basename.startsWith("credentials") || basename.startsWith("secrets")) return true;
+  if (/^service-account.*\.json$/.test(basename)) return true;
+  return /^(id_rsa|id_dsa|id_ecdsa|id_ed25519|id_ed25519_sk|id_xmss)$/.test(basename);
+}
+
+function isProtectedPath(path: string): boolean {
+  return protectedBasename(path);
+}
+
+function isPureDeletion(entry: StatusEntry): boolean {
+  return (entry.code[0] === "D" || entry.code[1] === "D") && !entry.code.includes("R") && !entry.code.includes("C");
+}
+
+function protectedChanges(statuses: StatusEntry[]): string[] {
+  return [...new Set(statuses.flatMap((entry) => {
+    if (isPureDeletion(entry)) return [];
+    const paths = [entry.path, ...(entry.oldPath ? [entry.oldPath] : [])];
+    return paths.filter(isProtectedPath);
+  }))].sort();
 }
 
 async function repositoryRoot(ctx: GitContext, run: GitExec): Promise<string> {
@@ -75,6 +117,24 @@ async function ensureSafeState(run: GitExec, root: string): Promise<string> {
   );
   if (conflicted) throw new Error("The index contains unresolved conflicts; resolve them before committing.");
   return branch.stdout.trim();
+}
+
+export async function validateAutoStage(ctx: GitContext): Promise<void> {
+  const run = git(ctx);
+  const root = await repositoryRoot(ctx, run);
+  await ensureSafeState(run, root);
+  const statusResult = await run(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (statusResult.code !== 0) fail(statusResult, "Unable to inspect Git status.");
+  const blocked = protectedChanges(parseStatus(statusResult.stdout));
+  if (blocked.length > 0) {
+    throw new Error(`Refusing to stage protected paths with --all: ${blocked.join(", ")}. No files were staged.`);
+  }
+}
+
+export async function stageAllSafely(ctx: GitContext): Promise<void> {
+  await validateAutoStage(ctx);
+  const add = await git(ctx)(["add", "-A"]);
+  if (add.code !== 0) fail(add, "Git could not stage all changes.");
 }
 
 async function untrackedContent(
@@ -110,7 +170,7 @@ export async function inspectRepository(ctx: GitContext, all: boolean, patchLimi
   const run = git(ctx);
   const root = await repositoryRoot(ctx, run);
   const branch = await ensureSafeState(run, root);
-  const statusResult = await run(["status", "--porcelain=v1", "-z"]);
+  const statusResult = await run(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (statusResult.code !== 0) fail(statusResult, "Unable to inspect Git status.");
   const statuses = parseStatus(statusResult.stdout);
   const diffArgs = all ? ["diff", "HEAD"] : ["diff", "--cached"];
@@ -166,10 +226,7 @@ export async function commitMessage(ctx: GitContext, message: string, all: boole
   const tempDir = await mkdtemp(join(tmpdir(), "pi-commit-"));
   const messageFile = join(tempDir, "message.txt");
   try {
-    if (all) {
-      const add = await run(["add", "-A"]);
-      if (add.code !== 0) fail(add, "Git could not stage all changes.");
-    }
+    if (all) await stageAllSafely(ctx);
     await writeFile(messageFile, `${message.trim()}\n`, { encoding: "utf8", mode: 0o600 });
     const result = await run(["commit", "--file", messageFile], { timeout: 120_000 });
     if (result.code !== 0) fail(result, "Git could not create the commit.");
